@@ -15,17 +15,20 @@ class UserAccount {
     required this.name,
     required this.username,
     required this.email,
+    this.avatarUrl,
   });
   final String id;
   final String name;
   final String username;
   final String email;
+  final String? avatarUrl;
 
   factory UserAccount.fromJson(Map<String, dynamic> json) => UserAccount(
     id: json['id'].toString(),
     name: json['name'] as String,
     username: json['username'] as String,
     email: json['email'] as String,
+    avatarUrl: json['avatar_url'] as String?,
   );
 }
 
@@ -115,29 +118,115 @@ class UserProfile {
     required this.id,
     required this.name,
     required this.username,
+    this.avatarUrl,
   });
   final String id;
   final String name;
   final String username;
+  final String? avatarUrl;
 
   factory UserProfile.fromJson(Map<String, dynamic> json) => UserProfile(
     id: json['id'].toString(),
     name: json['name'] as String,
     username: json['username'] as String,
+    avatarUrl: json['avatar_url'] as String?,
+  );
+}
+
+class Comment {
+  const Comment({
+    required this.id,
+    required this.userId,
+    required this.parentId,
+    required this.username,
+    required this.name,
+    required this.content,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String userId;
+  final String? parentId;
+  final String username;
+  final String name;
+  final String content;
+  final DateTime createdAt;
+
+  factory Comment.fromJson(Map<String, dynamic> json) => Comment(
+    id: json['id'].toString(),
+    userId: json['user_id'].toString(),
+    parentId: json['parent_id']?.toString(),
+    username: json['username'] as String,
+    name: json['name'] as String,
+    content: json['content'] as String,
+    createdAt: DateTime.parse(json['created_at'] as String),
+  );
+}
+
+class Archive {
+  const Archive({
+    required this.id,
+    required this.poemId,
+    required this.poemTitle,
+    required this.poemBody,
+    required this.authorName,
+    required this.authorUsername,
+    required this.archiveTitle,
+    required this.category,
+    required this.notes,
+    required this.tags,
+    required this.source,
+    required this.createdAt,
+    required this.updatedAt,
+  });
+
+  final String id;
+  final String poemId;
+  final String poemTitle;
+  final String poemBody;
+  final String authorName;
+  final String authorUsername;
+  final String archiveTitle;
+  final String category;
+  final String notes;
+  final String tags;
+  final String source;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  factory Archive.fromJson(Map<String, dynamic> json) => Archive(
+    id: json['id'].toString(),
+    poemId: json['poem_id'].toString(),
+    poemTitle: json['poem_title'] as String,
+    poemBody: json['poem_body'] as String,
+    authorName: json['author_name'] as String,
+    authorUsername: json['author_username'] as String,
+    archiveTitle: json['archive_title'] as String? ?? '',
+    category: json['category'] as String? ?? '',
+    notes: json['notes'] as String? ?? '',
+    tags: json['tags'] as String? ?? '',
+    source: json['source'] as String? ?? 'saved',
+    createdAt: DateTime.parse(json['created_at'] as String),
+    updatedAt: DateTime.parse(json['updated_at'] as String),
   );
 }
 
 abstract class PoetiumRepository {
-  Future<AuthSession> register({
+  Future<void> register({
     required String name,
     required String username,
     required String email,
     required String password,
   });
+  Future<void> verifyEmail(String token);
   Future<AuthSession> login({required String email, required String password});
   Future<void> forgotPassword(String email);
   Future<List<Poem>> fetchPoems(String token);
+  Future<List<Poem>> fetchLikedPoems(String token);
+  Future<List<Poem>> fetchFollowingFeed(String token);
   Future<List<UserProfile>> fetchUsers(String token);
+  Future<UserAccount> updateProfileImage(String token, String? dataUrl);
+  Future<List<Poem>> fetchUserPoems(String token, String userId);
   Future<Poem> createPoem({
     required String token,
     required String title,
@@ -155,6 +244,48 @@ abstract class PoetiumRepository {
     required String token,
     required String poemId,
   });
+
+  // Takip
+  Future<void> followUser(String token, String userId);
+  Future<void> unfollowUser(String token, String userId);
+  Future<List<UserProfile>> fetchFollowers(String token, String userId);
+  Future<List<UserProfile>> fetchFollowing(String token, String userId);
+
+  // Beğeni
+  Future<int> likePoem(String token, String poemId);
+  Future<int> unlikePoem(String token, String poemId);
+  Future<Map<String, dynamic>> fetchLikeStatus(String token, String poemId);
+
+  // Yorum
+  Future<Comment> addComment(
+    String token,
+    String poemId,
+    String content, {
+    String? parentId,
+  });
+  Future<List<Comment>> fetchComments(String token, String poemId);
+  Future<void> deleteComment(String token, String commentId);
+
+  // Arşiv
+  Future<Archive> archivePoem(
+    String token,
+    String poemId, {
+    String title = '',
+    String category = '',
+    String notes = '',
+    String tags = '',
+    String source = 'saved',
+  });
+  Future<List<Archive>> fetchArchives(String token);
+  Future<Archive> updateArchive(
+    String token,
+    String archiveId, {
+    required String title,
+    required String category,
+    required String notes,
+    required String tags,
+  });
+  Future<void> deleteArchive(String token, String archiveId);
 }
 
 class HttpPoetiumRepository implements PoetiumRepository {
@@ -193,6 +324,7 @@ class HttpPoetiumRepository implements PoetiumRepository {
           headers: headers,
           body: jsonEncode(body),
         ),
+        'DELETE' => await client.delete(uri, headers: headers),
         _ => throw ArgumentError('Unsupported method: $method'),
       };
     } catch (_) {
@@ -213,12 +345,12 @@ class HttpPoetiumRepository implements PoetiumRepository {
   );
 
   @override
-  Future<AuthSession> register({
+  Future<void> register({
     required String name,
     required String username,
     required String email,
     required String password,
-  }) async => sessionFrom(
+  }) async {
     await request(
       'POST',
       '/auth/register',
@@ -228,8 +360,17 @@ class HttpPoetiumRepository implements PoetiumRepository {
         'email': email,
         'password': password,
       },
-    ),
-  );
+    );
+  }
+
+  @override
+  Future<void> verifyEmail(String token) async {
+    await request(
+      'POST',
+      '/auth/verify-email',
+      body: {'token': token.trim()},
+    );
+  }
 
   @override
   Future<AuthSession> login({
@@ -257,8 +398,43 @@ class HttpPoetiumRepository implements PoetiumRepository {
   }
 
   @override
+  Future<UserAccount> updateProfileImage(String token, String? dataUrl) async {
+    final data = await request(
+      'PUT',
+      '/me/profile-image',
+      token: token,
+      body: {'avatarUrl': dataUrl},
+    );
+    return UserAccount.fromJson(data['user'] as Map<String, dynamic>);
+  }
+
+  @override
   Future<List<Poem>> fetchPoems(String token) async {
     final data = await request('GET', '/poems', token: token);
+    return (data['poems'] as List)
+        .map((item) => Poem.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  @override
+  Future<List<Poem>> fetchLikedPoems(String token) async {
+    final data = await request('GET', '/me/liked-poems', token: token);
+    return (data['poems'] as List)
+        .map((item) => Poem.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  @override
+  Future<List<Poem>> fetchUserPoems(String token, String userId) async {
+    final data = await request('GET', '/users/$userId/poems', token: token);
+    return (data['poems'] as List)
+        .map((item) => Poem.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  @override
+  Future<List<Poem>> fetchFollowingFeed(String token) async {
+    final data = await request('GET', '/feed', token: token);
     return (data['poems'] as List)
         .map((item) => Poem.fromJson(item as Map<String, dynamic>))
         .toList();
@@ -310,5 +486,140 @@ class HttpPoetiumRepository implements PoetiumRepository {
     return (data['ratings'] as List)
         .map((item) => RatingDetail.fromJson(item as Map<String, dynamic>))
         .toList();
+  }
+
+  @override
+  Future<void> followUser(String token, String userId) async {
+    await request('POST', '/users/$userId/follow', token: token);
+  }
+
+  @override
+  Future<void> unfollowUser(String token, String userId) async {
+    await request('POST', '/users/$userId/unfollow', token: token);
+  }
+
+  @override
+  Future<List<UserProfile>> fetchFollowers(String token, String userId) async {
+    final data = await request('GET', '/users/$userId/followers', token: token);
+    return (data['followers'] as List)
+        .map((item) => UserProfile.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  @override
+  Future<List<UserProfile>> fetchFollowing(String token, String userId) async {
+    final data = await request('GET', '/users/$userId/following', token: token);
+    return (data['following'] as List)
+        .map((item) => UserProfile.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  @override
+  Future<int> likePoem(String token, String poemId) async {
+    final data = await request('POST', '/poems/$poemId/like', token: token);
+    return (data['like_count'] as num).toInt();
+  }
+
+  @override
+  Future<int> unlikePoem(String token, String poemId) async {
+    final data = await request('POST', '/poems/$poemId/unlike', token: token);
+    return (data['like_count'] as num).toInt();
+  }
+
+  @override
+  Future<Map<String, dynamic>> fetchLikeStatus(String token, String poemId) async {
+    return await request('GET', '/poems/$poemId/likes', token: token);
+  }
+
+  @override
+  Future<Comment> addComment(
+    String token,
+    String poemId,
+    String content,
+    {String? parentId}
+  ) async {
+    final body = <String, dynamic>{'content': content};
+    if (parentId != null) body['parentId'] = parentId;
+    final data = await request(
+      'POST',
+      '/poems/$poemId/comments',
+      token: token,
+      body: body,
+    );
+    return Comment.fromJson(data['comment'] as Map<String, dynamic>);
+  }
+
+  @override
+  Future<List<Comment>> fetchComments(String token, String poemId) async {
+    final data = await request('GET', '/poems/$poemId/comments', token: token);
+    return (data['comments'] as List)
+        .map((item) => Comment.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  @override
+  Future<void> deleteComment(String token, String commentId) async {
+    await request('DELETE', '/comments/$commentId', token: token);
+  }
+
+  @override
+  Future<Archive> archivePoem(
+    String token,
+    String poemId, {
+    String title = '',
+    String category = '',
+    String notes = '',
+    String tags = '',
+    String source = 'saved',
+  }) async {
+    final data = await request(
+      'POST',
+      '/poems/$poemId/archive',
+      token: token,
+      body: {
+        'title': title,
+        'category': category,
+        'notes': notes,
+        'tags': tags,
+        'source': source,
+      },
+    );
+    return Archive.fromJson(data['archive'] as Map<String, dynamic>);
+  }
+
+  @override
+  Future<List<Archive>> fetchArchives(String token) async {
+    final data = await request('GET', '/me/archives', token: token);
+    return (data['archives'] as List)
+        .map((item) => Archive.fromJson(item as Map<String, dynamic>))
+        .toList();
+  }
+
+  @override
+  Future<Archive> updateArchive(
+    String token,
+    String archiveId, {
+    required String title,
+    required String category,
+    required String notes,
+    required String tags,
+  }) async {
+    final data = await request(
+      'PUT',
+      '/archives/$archiveId',
+      token: token,
+      body: {
+        'title': title,
+        'category': category,
+        'notes': notes,
+        'tags': tags,
+      },
+    );
+    return Archive.fromJson(data['archive'] as Map<String, dynamic>);
+  }
+
+  @override
+  Future<void> deleteArchive(String token, String archiveId) async {
+    await request('DELETE', '/archives/$archiveId', token: token);
   }
 }

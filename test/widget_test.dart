@@ -10,6 +10,7 @@ class FakePoetiumRepository implements PoetiumRepository {
     username: 'adadizeleri',
     email: 'ada@poetium.com',
   );
+  final followedUserIds = <String>{};
   final poems = <Poem>[
     Poem(
       id: '1',
@@ -25,15 +26,15 @@ class FakePoetiumRepository implements PoetiumRepository {
   bool resetRequested = false;
 
   @override
-  Future<AuthSession> register({
+  Future<void> register({
     required String name,
     required String username,
     required String email,
     required String password,
-  }) async => AuthSession(
-    token: 'test-token',
-    user: UserAccount(id: '1', name: name, username: username, email: email),
-  );
+  }) async {}
+
+  @override
+  Future<void> verifyEmail(String token) async {}
 
   @override
   Future<AuthSession> login({
@@ -50,9 +51,67 @@ class FakePoetiumRepository implements PoetiumRepository {
   Future<List<Poem>> fetchPoems(String token) async => List.of(poems);
 
   @override
+  Future<List<Poem>> fetchLikedPoems(String token) async => List.of(poems);
+
+  @override
+  Future<List<Poem>> fetchUserPoems(String token, String userId) async {
+    return poems
+        .where((poem) => poem.authorId == userId)
+        .toList();
+  }
+
+  @override
+  Future<List<Poem>> fetchFollowingFeed(String token) async {
+    return poems
+        .where((poem) => followedUserIds.contains(poem.authorId))
+        .toList();
+  }
+
+  @override
   Future<List<UserProfile>> fetchUsers(String token) async => const [
     UserProfile(id: '2', name: 'Leyla Keskin', username: 'leyladizeleri'),
   ];
+
+  @override
+  Future<UserAccount> updateProfileImage(String token, String? dataUrl) async =>
+      UserAccount(
+        id: user.id,
+        name: user.name,
+        username: user.username,
+        email: user.email,
+        avatarUrl: dataUrl,
+      );
+
+  @override
+  Future<void> followUser(String token, String userId) async {
+    followedUserIds.add(userId);
+  }
+
+  @override
+  Future<void> unfollowUser(String token, String userId) async {
+    followedUserIds.remove(userId);
+  }
+
+  @override
+  Future<List<UserProfile>> fetchFollowers(String token, String userId) async {
+    if (userId == '1') {
+      return const [UserProfile(id: '3', name: 'Naz Demir', username: 'nazpuanlar')];
+    }
+    if (userId == '2' && followedUserIds.contains('2')) {
+      return const [UserProfile(id: '1', name: 'Ada Yilmaz', username: 'adadizeleri')];
+    }
+    return const [];
+  }
+
+  @override
+  Future<List<UserProfile>> fetchFollowing(String token, String userId) async {
+    if (userId == '1') {
+      return followedUserIds.contains('2')
+          ? const [UserProfile(id: '2', name: 'Leyla Keskin', username: 'leyladizeleri')]
+          : const [];
+    }
+    return const [];
+  }
 
   @override
   Future<Poem> createPoem({
@@ -105,6 +164,87 @@ class FakePoetiumRepository implements PoetiumRepository {
       },
     ),
   ];
+
+  @override
+  Future<int> likePoem(String token, String poemId) async => 1;
+
+  @override
+  Future<int> unlikePoem(String token, String poemId) async => 0;
+
+  @override
+  Future<Map<String, dynamic>> fetchLikeStatus(String token, String poemId) async => {'like_count': 0, 'is_liked': false};
+
+  @override
+    Future<Comment> addComment(String token, String poemId, String content, {String? parentId}) async => Comment(
+        id: '1',
+        userId: '1',
+      parentId: parentId,
+        username: user.username,
+        name: user.name,
+        content: content,
+        createdAt: DateTime.now(),
+      );
+
+  @override
+  Future<List<Comment>> fetchComments(String token, String poemId) async => const [];
+
+  @override
+  Future<void> deleteComment(String token, String commentId) async {}
+
+  @override
+  Future<Archive> archivePoem(
+    String token,
+    String poemId, {
+    String title = '',
+    String category = '',
+    String notes = '',
+    String tags = '',
+    String source = 'saved',
+  }) async => Archive(
+        id: '1',
+        poemId: poemId,
+        poemTitle: 'Demo',
+        poemBody: 'Demo',
+        authorName: 'Ada Yilmaz',
+        authorUsername: 'adadizeleri',
+        archiveTitle: title,
+        category: '',
+        notes: notes,
+        tags: tags,
+        source: source,
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+  @override
+  Future<List<Archive>> fetchArchives(String token) async => const [];
+
+  @override
+  Future<Archive> updateArchive(
+    String token,
+    String archiveId, {
+    required String title,
+    required String category,
+    required String notes,
+    required String tags,
+  }) async => Archive(
+        id: archiveId,
+        poemId: '1',
+        poemTitle: 'Demo',
+        poemBody: 'Demo',
+        authorName: 'Ada Yilmaz',
+        authorUsername: 'adadizeleri',
+        archiveTitle: title,
+        category: '',
+        notes: notes,
+        tags: tags,
+        source: 'saved',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+  @override
+  Future<void> deleteArchive(String token, String archiveId) async {}
 }
 
 void main() {
@@ -178,6 +318,17 @@ void main() {
     await tester.tap(find.byKey(const Key('auth-submit')));
     await tester.pumpAndSettle();
 
+    expect(find.text('E-postanı doğrula'), findsOneWidget);
+    await tester.enterText(find.byKey(const Key('verification-token')), 'test-token');
+    await tester.ensureVisible(find.byKey(const Key('auth-submit')));
+    await tester.tap(find.byKey(const Key('auth-submit')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('auth-email')), 'ada@poetium.com');
+    await tester.enterText(find.byKey(const Key('auth-password')), 'siir123');
+    await tester.ensureVisible(find.byKey(const Key('auth-submit')));
+    await tester.tap(find.byKey(const Key('auth-submit')));
+    await tester.pumpAndSettle();
+
     expect(find.text('Keşfet'), findsWidgets);
     expect(find.text('Kiyida'), findsOneWidget);
 
@@ -188,6 +339,7 @@ void main() {
       find.widgetWithText(TextField, 'Dizelerini buraya bırak...'),
       'Bir golge dustu kagida.',
     );
+    await tester.ensureVisible(find.text('Yayınla'));
     await tester.tap(find.text('Yayınla'));
     await tester.pumpAndSettle();
 
@@ -219,6 +371,170 @@ void main() {
       );
     },
   );
+
+  testWidgets('lets a user follow another poet from the selection list', (
+    WidgetTester tester,
+  ) async {
+    final repository = FakePoetiumRepository();
+    await tester.pumpWidget(PoetiumApp(repository: repository));
+
+    await tester.enterText(
+      find.byKey(const Key('auth-email')),
+      'ada@poetium.com',
+    );
+    await tester.enterText(find.byKey(const Key('auth-password')), 'siir123');
+    await tester.ensureVisible(find.byKey(const Key('auth-submit')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('auth-submit')));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('Yaz'));
+    await tester.tap(find.text('Yaz'));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('Seçtiklerim'));
+    await tester.tap(find.text('Seçtiklerim'));
+    await tester.pumpAndSettle();
+
+    final followButton = find.text('Takip et');
+    expect(followButton, findsOneWidget);
+    await tester.tap(followButton);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Takipten çık'), findsOneWidget);
+    expect(repository.followedUserIds, contains('2'));
+  });
+
+  testWidgets('shows poems written by followed poets in the discover feed', (
+    WidgetTester tester,
+  ) async {
+    final repository = FakePoetiumRepository();
+    repository.followedUserIds.add('2');
+    repository.poems.insert(
+      0,
+      Poem(
+        id: '99',
+        authorId: '2',
+        title: 'Takipteki şiir',
+        body: 'Yolunu bekliyorum.',
+        author: '@leyladizeleri',
+        visibility: 'Herkese açık',
+        scores: {'İmge': 5, 'Ritim': 4, 'Duygu': 5, 'Özgünlük': 4},
+        ratings: 1,
+      ),
+    );
+
+    await tester.pumpWidget(PoetiumApp(repository: repository));
+
+    await tester.enterText(
+      find.byKey(const Key('auth-email')),
+      'ada@poetium.com',
+    );
+    await tester.enterText(find.byKey(const Key('auth-password')), 'siir123');
+    await tester.ensureVisible(find.byKey(const Key('auth-submit')));
+    await tester.tap(find.byKey(const Key('auth-submit')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Takipteki şiir'), findsOneWidget);
+    expect(await repository.fetchFollowingFeed('test-token'), isNotEmpty);
+  });
+
+  testWidgets('shows follower and following lists from the profile screen', (
+    WidgetTester tester,
+  ) async {
+    final repository = FakePoetiumRepository();
+    repository.followedUserIds.add('2');
+    await tester.pumpWidget(PoetiumApp(repository: repository));
+
+    await tester.enterText(
+      find.byKey(const Key('auth-email')),
+      'ada@poetium.com',
+    );
+    await tester.enterText(find.byKey(const Key('auth-password')), 'siir123');
+    await tester.ensureVisible(find.byKey(const Key('auth-submit')));
+    await tester.tap(find.byKey(const Key('auth-submit')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Ben'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Takipçi'));
+    await tester.pumpAndSettle();
+    expect(find.text('Takipçiler'), findsOneWidget);
+    expect(find.text('@nazpuanlar'), findsOneWidget);
+
+    Navigator.of(tester.element(find.text('Takipçiler'))).pop();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Takip'));
+    await tester.pumpAndSettle();
+    expect(find.text('Takip edilenler'), findsOneWidget);
+    expect(find.text('@leyladizeleri'), findsOneWidget);
+  });
+
+  testWidgets('lets a user unfollow from the profile list modal', (
+    WidgetTester tester,
+  ) async {
+    final repository = FakePoetiumRepository();
+    repository.followedUserIds.add('2');
+    await tester.pumpWidget(PoetiumApp(repository: repository));
+
+    await tester.enterText(
+      find.byKey(const Key('auth-email')),
+      'ada@poetium.com',
+    );
+    await tester.enterText(find.byKey(const Key('auth-password')), 'siir123');
+    await tester.ensureVisible(find.byKey(const Key('auth-submit')));
+    await tester.tap(find.byKey(const Key('auth-submit')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Ben'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Takip'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Takipten çık'), findsOneWidget);
+    await tester.tap(find.text('Takipten çık'));
+    await tester.pumpAndSettle();
+
+    expect(repository.followedUserIds, isNot(contains('2')));
+  });
+
+  testWidgets('opens another user profile from the followed people search list', (
+    WidgetTester tester,
+  ) async {
+    final repository = FakePoetiumRepository();
+    repository.followedUserIds.add('2');
+    await tester.pumpWidget(PoetiumApp(repository: repository));
+
+    await tester.enterText(
+      find.byKey(const Key('auth-email')),
+      'ada@poetium.com',
+    );
+    await tester.enterText(find.byKey(const Key('auth-password')), 'siir123');
+    await tester.ensureVisible(find.byKey(const Key('auth-submit')));
+    await tester.tap(find.byKey(const Key('auth-submit')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Ben'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Takip'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), 'leyl');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('@leyladizeleri'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('@leyladizeleri'), findsWidgets);
+    expect(find.text('Leyla Keskin'), findsWidgets);
+    expect(find.text('Takipten çık'), findsOneWidget);
+
+    await tester.tap(find.text('Takipten çık'));
+    await tester.pumpAndSettle();
+
+    expect(repository.followedUserIds, isNot(contains('2')));
+  });
 
   testWidgets('shows the weighted poetry evaluation criteria', (
     WidgetTester tester,
@@ -299,12 +615,15 @@ void main() {
 
 class _FailingRepository implements PoetiumRepository {
   @override
-  Future<AuthSession> register({
+  Future<void> register({
     required String name,
     required String username,
     required String email,
     required String password,
   }) async => throw UnimplementedError();
+
+  @override
+  Future<void> verifyEmail(String token) async {}
 
   @override
   Future<AuthSession> login({
@@ -323,7 +642,20 @@ class _FailingRepository implements PoetiumRepository {
   Future<List<Poem>> fetchPoems(String token) async => const [];
 
   @override
+  Future<List<Poem>> fetchLikedPoems(String token) async => const [];
+
+  @override
+  Future<List<Poem>> fetchUserPoems(String token, String userId) async => const [];
+
+  @override
+  Future<List<Poem>> fetchFollowingFeed(String token) async => const [];
+
+  @override
   Future<List<UserProfile>> fetchUsers(String token) async => const [];
+
+  @override
+  Future<UserAccount> updateProfileImage(String token, String? dataUrl) async =>
+      throw const ApiException('Kullanıcı bulunamadı.');
 
   @override
   Future<Poem> createPoem({
@@ -346,4 +678,97 @@ class _FailingRepository implements PoetiumRepository {
     required String token,
     required String poemId,
   }) async => const [];
+
+  @override
+  Future<void> followUser(String token, String userId) async {}
+
+  @override
+  Future<void> unfollowUser(String token, String userId) async {}
+
+  @override
+  Future<List<UserProfile>> fetchFollowers(String token, String userId) async => const [];
+
+  @override
+  Future<List<UserProfile>> fetchFollowing(String token, String userId) async => const [];
+
+  @override
+  Future<int> likePoem(String token, String poemId) async => 0;
+
+  @override
+  Future<int> unlikePoem(String token, String poemId) async => 0;
+
+  @override
+  Future<Map<String, dynamic>> fetchLikeStatus(String token, String poemId) async => {'like_count': 0, 'is_liked': false};
+
+  @override
+    Future<Comment> addComment(String token, String poemId, String content, {String? parentId}) async => Comment(
+        id: '1',
+        userId: '1',
+      parentId: parentId,
+        username: 'demo',
+        name: 'Demo',
+        content: content,
+        createdAt: DateTime.now(),
+      );
+
+  @override
+  Future<List<Comment>> fetchComments(String token, String poemId) async => const [];
+
+  @override
+  Future<void> deleteComment(String token, String commentId) async {}
+
+  @override
+  Future<Archive> archivePoem(
+    String token,
+    String poemId, {
+    String title = '',
+    String category = '',
+    String notes = '',
+    String tags = '',
+    String source = 'saved',
+  }) async => Archive(
+        id: '1',
+        poemId: poemId,
+        poemTitle: 'Demo',
+        poemBody: 'Demo',
+        authorName: 'Demo',
+        authorUsername: 'demo',
+        archiveTitle: title,
+        category: '',
+        notes: notes,
+        tags: tags,
+        source: source,
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+  @override
+  Future<List<Archive>> fetchArchives(String token) async => const [];
+
+  @override
+  Future<Archive> updateArchive(
+    String token,
+    String archiveId, {
+    required String title,
+    required String category,
+    required String notes,
+    required String tags,
+  }) async => Archive(
+        id: archiveId,
+        poemId: '1',
+        poemTitle: 'Demo',
+        poemBody: 'Demo',
+        authorName: 'Demo',
+        authorUsername: 'demo',
+        archiveTitle: title,
+        category: '',
+        notes: notes,
+        tags: tags,
+        source: 'saved',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+  @override
+  Future<void> deleteArchive(String token, String archiveId) async {}
 }

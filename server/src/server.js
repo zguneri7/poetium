@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs';
 import cors from 'cors';
 import express from 'express';
 import jwt from 'jsonwebtoken';
+import nodemailer from 'nodemailer';
 import { pool, query } from './db.js';
 import { migrate } from './migrate.js';
 
@@ -11,10 +12,38 @@ if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET is required.');
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '64kb' }));
+app.use(express.json({ limit: '2mb' }));
+
+const mailer = process.env.SMTP_HOST
+  ? nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: Number(process.env.SMTP_PORT ?? 587),
+      secure: process.env.SMTP_SECURE === 'true',
+      auth: process.env.SMTP_USER
+        ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+        : undefined,
+    })
+  : null;
+
+async function sendVerificationEmail(email, token) {
+  if (!mailer) throw new Error('SMTP_HOST, SMTP_USER ve SMTP_PASS yapılandırılmalı.');
+  const verifyUrl = `${process.env.APP_URL ?? 'http://localhost:3000'}/auth/verify-email?token=${token}`;
+  await mailer.sendMail({
+    from: process.env.SMTP_FROM ?? process.env.SMTP_USER,
+    to: email,
+    subject: 'Poetium e-posta doğrulaması',
+    text: `Poetium hesabını doğrulamak için bu kodu uygulamaya gir:\n\n${token}\n\nBağlantı: ${verifyUrl}\n\nBu kod 30 dakika geçerlidir.`,
+  });
+}
 
 function publicUser(row) {
-  return { id: String(row.id), name: row.name, username: row.username, email: row.email };
+  return {
+    id: String(row.id),
+    name: row.name,
+    username: row.username,
+    email: row.email,
+    avatar_url: row.avatar_url ?? null,
+  };
 }
 
 function issueToken(user) {
@@ -80,12 +109,20 @@ app.post('/auth/register', async (req, res, next) => {
     }
     if (password.length < 6) return res.status(400).json({ message: 'Şifre en az 6 karakter olmalı.' });
     const passwordHash = await bcrypt.hash(password, 12);
+    const rawToken = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
     const result = await query(
       `INSERT INTO users(name, username, email, password_hash)
        VALUES ($1, LOWER($2), LOWER($3), $4) RETURNING *`,
       [name.trim(), username.trim(), email.trim(), passwordHash],
     );
-    res.status(201).json({ token: issueToken(result.rows[0]), user: publicUser(result.rows[0]) });
+    await query(
+      `INSERT INTO email_verification_tokens(user_id, token_hash, expires_at)
+       VALUES ($1, $2, NOW() + INTERVAL '30 minutes')`,
+      [result.rows[0].id, tokenHash],
+    );
+    await sendVerificationEmail(result.rows[0].email, rawToken);
+    res.status(202).json({ message: 'Doğrulama e-postası gönderildi.' });
   } catch (error) {
     if (error.code === '23505') return res.status(409).json({ message: 'E-posta veya kullanıcı adı zaten kayıtlı.' });
     next(error);
@@ -103,7 +140,42 @@ app.post('/auth/login', async (req, res, next) => {
     if (!(await bcrypt.compare(password ?? '', user.password_hash))) {
       return res.status(401).json({ message: 'E-posta veya şifre hatalı.' });
     }
+    if (!user.email_verified_at) {
+      return res.status(403).json({ message: 'Önce e-posta adresini doğrula.' });
+    }
     res.json({ token: issueToken(user), user: publicUser(user) });
+  } catch (error) { next(error); }
+});
+
+app.get('/auth/verify-email', async (req, res, next) => {
+  try {
+    const token = String(req.query.token ?? '');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const result = await query(
+      `SELECT id, user_id FROM email_verification_tokens
+       WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()`,
+      [tokenHash],
+    );
+    if (!result.rows[0]) return res.status(400).send('Doğrulama bağlantısı geçersiz veya süresi dolmuş.');
+    await query('UPDATE users SET email_verified_at = NOW() WHERE id = $1', [result.rows[0].user_id]);
+    await query('UPDATE email_verification_tokens SET used_at = NOW() WHERE id = $1', [result.rows[0].id]);
+    res.send('E-posta doğrulandı. Poetium uygulamasına dönüp giriş yapabilirsin.');
+  } catch (error) { next(error); }
+});
+
+app.post('/auth/verify-email', async (req, res, next) => {
+  try {
+    const token = String(req.body.token ?? '');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const result = await query(
+      `SELECT id, user_id FROM email_verification_tokens
+       WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()`,
+      [tokenHash],
+    );
+    if (!result.rows[0]) return res.status(400).json({ message: 'Doğrulama kodu geçersiz veya süresi dolmuş.' });
+    await query('UPDATE users SET email_verified_at = NOW() WHERE id = $1', [result.rows[0].user_id]);
+    await query('UPDATE email_verification_tokens SET used_at = NOW() WHERE id = $1', [result.rows[0].id]);
+    res.json({ message: 'E-posta doğrulandı.' });
   } catch (error) { next(error); }
 });
 
@@ -135,21 +207,86 @@ app.get('/me', authenticate, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
+app.put('/me/profile-image', authenticate, async (req, res, next) => {
+  try {
+    const avatarUrl = req.body.avatarUrl;
+    if (avatarUrl !== null &&
+        (typeof avatarUrl !== 'string' || !avatarUrl.startsWith('data:image/'))) {
+      return res.status(400).json({ message: 'Profil resmi geçersiz.' });
+    }
+    if (typeof avatarUrl === 'string' && avatarUrl.length > 1500000) {
+      return res.status(413).json({ message: 'Profil resmi çok büyük.' });
+    }
+    const result = await query(
+      'UPDATE users SET avatar_url = $1 WHERE id = $2 RETURNING *',
+      [avatarUrl, req.userId],
+    );
+    if (!result.rows[0]) return res.status(404).json({ message: 'Kullanıcı bulunamadı.' });
+    res.json({ user: publicUser(result.rows[0]) });
+  } catch (error) { next(error); }
+});
+
   app.get('/users', authenticate, async (req, res, next) => {
     try {
       const result = await query(
-        'SELECT id, name, username FROM users WHERE id <> $1 ORDER BY name LIMIT 100',
+        'SELECT id, name, username, avatar_url FROM users WHERE id <> $1 ORDER BY name LIMIT 100',
         [req.userId],
       );
       res.json({ users: result.rows.map((user) => ({ ...user, id: String(user.id) })) });
     } catch (error) { next(error); }
   });
 
+app.get('/users/:id', authenticate, async (req, res, next) => {
+  try {
+    const result = await query(
+      'SELECT id, name, username, avatar_url FROM users WHERE id = $1',
+      [req.params.id],
+    );
+    if (!result.rows[0]) return res.status(404).json({ message: 'Kullanıcı bulunamadı.' });
+    res.json({ user: { ...result.rows[0], id: String(result.rows[0].id) } });
+  } catch (error) { next(error); }
+});
+
+app.get('/users/:id/poems', authenticate, async (req, res, next) => {
+  try {
+    const result = await query(
+      poemSelect(`WHERE p.author_id = $1 AND (
+        p.visibility = 'public' OR p.author_id = $2 OR EXISTS (
+          SELECT 1 FROM poem_recipients pr WHERE pr.poem_id = p.id AND pr.user_id = $2
+        )
+      )`),
+      [req.params.id, req.userId],
+    );
+    res.json({ poems: result.rows });
+  } catch (error) { next(error); }
+});
+
+function poemAccessClause(currentUserId) {
+  return `WHERE p.visibility = 'public'
+    OR p.author_id = ${currentUserId}
+    OR EXISTS (
+      SELECT 1 FROM poem_recipients pr WHERE pr.poem_id = p.id AND pr.user_id = ${currentUserId}
+    )
+    OR EXISTS (
+      SELECT 1 FROM follows f WHERE f.follower_id = ${currentUserId} AND f.following_id = p.author_id
+    )`;
+}
+
 app.get('/poems', authenticate, async (req, res, next) => {
   try {
-    const result = await query(poemSelect(`WHERE p.visibility = 'public' OR p.author_id = $1 OR EXISTS (
-      SELECT 1 FROM poem_recipients pr WHERE pr.poem_id = p.id AND pr.user_id = $1
-    )`), [req.userId]);
+    const result = await query(poemSelect(poemAccessClause(req.userId)), [req.userId]);
+    res.json({ poems: result.rows });
+  } catch (error) { next(error); }
+});
+
+app.get('/feed', authenticate, async (req, res, next) => {
+  try {
+    const result = await query(
+      poemSelect(`WHERE EXISTS (
+        SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.following_id = p.author_id
+      )`),
+      [req.userId],
+    );
     res.json({ poems: result.rows });
   } catch (error) { next(error); }
 });
@@ -281,6 +418,276 @@ app.put('/poems/:id/rating', authenticate, async (req, res, next) => {
     );
     const result = await query(poemSelect('WHERE p.id = $1'), [req.params.id]);
     res.json({ poem: result.rows[0] });
+  } catch (error) { next(error); }
+});
+
+// TAKIP ENDPOINTS
+app.post('/users/:id/follow', authenticate, async (req, res, next) => {
+  try {
+    if (String(req.userId) === req.params.id) return res.status(400).json({ message: 'Kendinizi takip edemezsiniz.' });
+    const checkUser = await query('SELECT id FROM users WHERE id = $1', [req.params.id]);
+    if (!checkUser.rows[0]) return res.status(404).json({ message: 'Kullanıcı bulunamadı.' });
+    await query('INSERT INTO follows(follower_id, following_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.userId, req.params.id]);
+    res.json({ message: 'Takip başarılı.' });
+  } catch (error) { next(error); }
+});
+
+app.post('/users/:id/unfollow', authenticate, async (req, res, next) => {
+  try {
+    await query('DELETE FROM follows WHERE follower_id = $1 AND following_id = $2', [req.userId, req.params.id]);
+    res.json({ message: 'Takip kaldırıldı.' });
+  } catch (error) { next(error); }
+});
+
+app.get('/users/:id/followers', authenticate, async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT u.id, u.name, u.username, u.avatar_url FROM users u
+       JOIN follows f ON u.id = f.follower_id
+       WHERE f.following_id = $1
+       ORDER BY f.created_at DESC`,
+      [req.params.id],
+    );
+    res.json({ followers: result.rows.map((u) => ({ ...u, id: String(u.id) })) });
+  } catch (error) { next(error); }
+});
+
+app.get('/users/:id/following', authenticate, async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT u.id, u.name, u.username, u.avatar_url FROM users u
+       JOIN follows f ON u.id = f.following_id
+       WHERE f.follower_id = $1
+       ORDER BY f.created_at DESC`,
+      [req.params.id],
+    );
+    res.json({ following: result.rows.map((u) => ({ ...u, id: String(u.id) })) });
+  } catch (error) { next(error); }
+});
+
+// BEĞENI ENDPOINTS
+app.post('/poems/:id/like', authenticate, async (req, res, next) => {
+  try {
+    await query('INSERT INTO likes(user_id, poem_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [req.userId, req.params.id]);
+    const result = await query('SELECT COUNT(*)::int as like_count FROM likes WHERE poem_id = $1', [req.params.id]);
+    res.json({ like_count: result.rows[0].like_count });
+  } catch (error) { next(error); }
+});
+
+app.post('/poems/:id/unlike', authenticate, async (req, res, next) => {
+  try {
+    await query('DELETE FROM likes WHERE user_id = $1 AND poem_id = $2', [req.userId, req.params.id]);
+    const result = await query('SELECT COUNT(*)::int as like_count FROM likes WHERE poem_id = $1', [req.params.id]);
+    res.json({ like_count: result.rows[0].like_count });
+  } catch (error) { next(error); }
+});
+
+app.get('/poems/:id/likes', authenticate, async (req, res, next) => {
+  try {
+    const result = await query(
+      'SELECT COUNT(*)::int as like_count FROM likes WHERE poem_id = $1',
+      [req.params.id],
+    );
+    const liked = await query(
+      'SELECT 1 FROM likes WHERE user_id = $1 AND poem_id = $2',
+      [req.userId, req.params.id],
+    );
+    res.json({ like_count: result.rows[0].like_count, is_liked: !!liked.rows[0] });
+  } catch (error) { next(error); }
+});
+
+app.get('/me/liked-poems', authenticate, async (req, res, next) => {
+  try {
+    const result = await query(
+      poemSelect(`WHERE EXISTS (
+        SELECT 1 FROM likes l WHERE l.poem_id = p.id AND l.user_id = $1
+      )`),
+      [req.userId],
+    );
+    res.json({ poems: result.rows });
+  } catch (error) { next(error); }
+});
+
+// YORUM ENDPOINTS
+app.post('/poems/:id/comments', authenticate, async (req, res, next) => {
+  try {
+    const { content, parentId } = req.body;
+    if (!content?.trim() || content.length > 500) return res.status(400).json({ message: 'Yorum 1-500 karakter olmalı.' });
+    if (parentId) {
+      const parent = await query(
+        'SELECT id FROM comments WHERE id = $1 AND poem_id = $2',
+        [parentId, req.params.id],
+      );
+      if (!parent.rows[0]) return res.status(400).json({ message: 'Yanıtlanacak yorum bulunamadı.' });
+    }
+    const result = await query(
+      `INSERT INTO comments(poem_id, user_id, parent_id, content) VALUES ($1, $2, $3, $4)
+       RETURNING id, poem_id, user_id, parent_id, content, created_at`,
+      [req.params.id, req.userId, parentId || null, content.trim()],
+    );
+    const user = await query('SELECT name, username FROM users WHERE id = $1', [req.userId]);
+    res.status(201).json({
+      comment: {
+        id: String(result.rows[0].id),
+        poem_id: String(result.rows[0].poem_id),
+        user_id: String(result.rows[0].user_id),
+        parent_id: result.rows[0].parent_id ? String(result.rows[0].parent_id) : null,
+        name: user.rows[0].name,
+        username: user.rows[0].username,
+        content: result.rows[0].content,
+        created_at: result.rows[0].created_at,
+      },
+    });
+  } catch (error) { next(error); }
+});
+
+app.get('/poems/:id/comments', authenticate, async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT c.id, c.user_id, c.parent_id, c.content, c.created_at, u.name, u.username
+       FROM comments c
+       JOIN users u ON u.id = c.user_id
+       WHERE c.poem_id = $1
+       ORDER BY c.created_at DESC`,
+      [req.params.id],
+    );
+    res.json({
+      comments: result.rows.map((c) => ({
+        id: String(c.id),
+        user_id: String(c.user_id),
+        parent_id: c.parent_id ? String(c.parent_id) : null,
+        name: c.name,
+        username: c.username,
+        content: c.content,
+        created_at: c.created_at,
+      })),
+    });
+  } catch (error) { next(error); }
+});
+
+app.delete('/comments/:id', authenticate, async (req, res, next) => {
+  try {
+    const result = await query('SELECT user_id FROM comments WHERE id = $1', [req.params.id]);
+    if (!result.rows[0]) return res.status(404).json({ message: 'Yorum bulunamadı.' });
+    if (String(result.rows[0].user_id) !== String(req.userId)) {
+      return res.status(403).json({ message: 'Bu yorum sizin değil.' });
+    }
+    await query('DELETE FROM comments WHERE id = $1', [req.params.id]);
+    res.json({ message: 'Yorum silindi.' });
+  } catch (error) { next(error); }
+});
+
+// ARŞİV ENDPOINTS
+app.post('/poems/:id/archive', authenticate, async (req, res, next) => {
+  try {
+    const { title, category = '', notes = '', tags = '', source = 'saved' } = req.body;
+    if (!['saved', 'ocr'].includes(source)) return res.status(400).json({ message: 'Kaynak geçersiz.' });
+    const poem = await query('SELECT id FROM poems WHERE id = $1', [req.params.id]);
+    if (!poem.rows[0]) return res.status(404).json({ message: 'Şiir bulunamadı.' });
+    const result = await query(
+      `INSERT INTO archives(user_id, poem_id, title, category, notes, tags, source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (user_id, poem_id) DO UPDATE SET
+         title = EXCLUDED.title, category = EXCLUDED.category,
+         notes = EXCLUDED.notes, tags = EXCLUDED.tags,
+         source = EXCLUDED.source, updated_at = NOW()
+       RETURNING *`,
+      [req.userId, req.params.id, title || '', category.substring(0, 80), notes.substring(0, 5000), tags.substring(0, 200), source],
+    );
+    const archive = await query(
+      `SELECT a.id, a.poem_id, a.title, a.category, a.notes, a.tags, a.source,
+        a.created_at, a.updated_at, p.title AS poem_title, p.body AS poem_body,
+        u.name AS author_name, u.username AS author_username
+       FROM archives a
+       JOIN poems p ON p.id = a.poem_id
+       JOIN users u ON u.id = p.author_id
+       WHERE a.id = $1`,
+      [result.rows[0].id],
+    );
+    const a = archive.rows[0];
+    res.status(201).json({ archive: {
+      id: String(a.id), poem_id: String(a.poem_id), poem_title: a.poem_title,
+      poem_body: a.poem_body, author_name: a.author_name,
+      author_username: a.author_username, archive_title: a.title,
+      category: a.category ?? '', notes: a.notes, tags: a.tags,
+      source: a.source, created_at: a.created_at, updated_at: a.updated_at,
+    } });
+  } catch (error) { next(error); }
+});
+
+app.get('/me/archives', authenticate, async (req, res, next) => {
+  try {
+    const result = await query(
+      `SELECT a.id, a.poem_id, a.title, a.category, a.notes, a.tags, a.source, a.created_at, a.updated_at,
+        p.title AS poem_title, p.body, u.name AS author_name, u.username AS author_username
+       FROM archives a
+       JOIN poems p ON p.id = a.poem_id
+       JOIN users u ON u.id = p.author_id
+       WHERE a.user_id = $1
+       ORDER BY a.updated_at DESC`,
+      [req.userId],
+    );
+    res.json({
+      archives: result.rows.map((a) => ({
+        id: String(a.id),
+        poem_id: String(a.poem_id),
+        poem_title: a.poem_title,
+        poem_body: a.body,
+        author_name: a.author_name,
+        author_username: a.author_username,
+        archive_title: a.title,
+        category: a.category ?? '',
+        notes: a.notes,
+        tags: a.tags,
+        source: a.source,
+        created_at: a.created_at,
+        updated_at: a.updated_at,
+      })),
+    });
+  } catch (error) { next(error); }
+});
+
+app.put('/archives/:id', authenticate, async (req, res, next) => {
+  try {
+    const { title, category = '', notes = '', tags = '' } = req.body;
+    const archive = await query('SELECT user_id FROM archives WHERE id = $1', [req.params.id]);
+    if (!archive.rows[0]) return res.status(404).json({ message: 'Arşiv bulunamadı.' });
+    if (String(archive.rows[0].user_id) !== String(req.userId)) {
+      return res.status(403).json({ message: 'Bu arşiv sizin değil.' });
+    }
+    const result = await query(
+      `UPDATE archives SET title = $2, category = $3, notes = $4, tags = $5, updated_at = NOW()
+       WHERE id = $1 RETURNING id`,
+      [req.params.id, title || '', category.substring(0, 80), notes.substring(0, 5000), tags.substring(0, 200)],
+    );
+    const updated = await query(
+      `SELECT a.id, a.poem_id, a.title, a.category, a.notes, a.tags, a.source, a.created_at, a.updated_at,
+        p.title AS poem_title, p.body AS poem_body, u.name AS author_name, u.username AS author_username
+       FROM archives a JOIN poems p ON p.id = a.poem_id JOIN users u ON u.id = p.author_id
+       WHERE a.id = $1`,
+      [result.rows[0].id],
+    );
+    const a = updated.rows[0];
+    res.json({ archive: {
+      id: String(a.id), poem_id: String(a.poem_id), poem_title: a.poem_title,
+      poem_body: a.poem_body, author_name: a.author_name,
+      author_username: a.author_username, archive_title: a.title,
+      category: a.category ?? '',
+      notes: a.notes, tags: a.tags, source: a.source,
+      created_at: a.created_at, updated_at: a.updated_at,
+    } });
+  } catch (error) { next(error); }
+});
+
+app.delete('/archives/:id', authenticate, async (req, res, next) => {
+  try {
+    const archive = await query('SELECT user_id FROM archives WHERE id = $1', [req.params.id]);
+    if (!archive.rows[0]) return res.status(404).json({ message: 'Arşiv bulunamadı.' });
+    if (String(archive.rows[0].user_id) !== String(req.userId)) {
+      return res.status(403).json({ message: 'Bu arşiv sizin değil.' });
+    }
+    await query('DELETE FROM archives WHERE id = $1', [req.params.id]);
+    res.json({ message: 'Arşiv silindi.' });
   } catch (error) { next(error); }
 });
 
