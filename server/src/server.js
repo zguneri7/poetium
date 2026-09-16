@@ -10,6 +10,8 @@ import { migrate } from './migrate.js';
 
 if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET is required.');
 
+const emailVerificationRequired = process.env.EMAIL_VERIFICATION_REQUIRED === 'true';
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
@@ -109,20 +111,23 @@ app.post('/auth/register', async (req, res, next) => {
     }
     if (password.length < 6) return res.status(400).json({ message: 'Şifre en az 6 karakter olmalı.' });
     const passwordHash = await bcrypt.hash(password, 12);
-    const rawToken = crypto.randomBytes(32).toString('hex');
-    const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
     const result = await query(
-      `INSERT INTO users(name, username, email, password_hash)
-       VALUES ($1, LOWER($2), LOWER($3), $4) RETURNING *`,
+      `INSERT INTO users(name, username, email, password_hash, email_verified_at)
+       VALUES ($1, LOWER($2), LOWER($3), $4, ${emailVerificationRequired ? 'NULL' : 'NOW()'}) RETURNING *`,
       [name.trim(), username.trim(), email.trim(), passwordHash],
     );
-    await query(
-      `INSERT INTO email_verification_tokens(user_id, token_hash, expires_at)
-       VALUES ($1, $2, NOW() + INTERVAL '30 minutes')`,
-      [result.rows[0].id, tokenHash],
-    );
-    await sendVerificationEmail(result.rows[0].email, rawToken);
-    res.status(202).json({ message: 'Doğrulama e-postası gönderildi.' });
+    if (emailVerificationRequired) {
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+      await query(
+        `INSERT INTO email_verification_tokens(user_id, token_hash, expires_at)
+         VALUES ($1, $2, NOW() + INTERVAL '30 minutes')`,
+        [result.rows[0].id, tokenHash],
+      );
+      await sendVerificationEmail(result.rows[0].email, rawToken);
+      return res.status(202).json({ message: 'Doğrulama e-postası gönderildi.' });
+    }
+    res.status(201).json({ message: 'Kayıt başarılı.' });
   } catch (error) {
     if (error.code === '23505') return res.status(409).json({ message: 'E-posta veya kullanıcı adı zaten kayıtlı.' });
     next(error);
@@ -140,7 +145,7 @@ app.post('/auth/login', async (req, res, next) => {
     if (!(await bcrypt.compare(password ?? '', user.password_hash))) {
       return res.status(401).json({ message: 'E-posta veya şifre hatalı.' });
     }
-    if (!user.email_verified_at) {
+    if (emailVerificationRequired && !user.email_verified_at) {
       return res.status(403).json({ message: 'Önce e-posta adresini doğrula.' });
     }
     res.json({ token: issueToken(user), user: publicUser(user) });

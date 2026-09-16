@@ -96,6 +96,11 @@ class PoetiumBrand extends StatelessWidget {
 
 enum AuthMode { login, register, verifyEmail, forgotPassword }
 
+const bool emailVerificationRequired = bool.fromEnvironment(
+  'EMAIL_VERIFICATION_REQUIRED',
+  defaultValue: false,
+);
+
 class AuthScreen extends StatefulWidget {
   const AuthScreen({
     super.key,
@@ -162,10 +167,18 @@ class _AuthScreenState extends State<AuthScreen> {
           password: password.text,
         );
         if (!mounted) return;
-        setState(() => mode = AuthMode.verifyEmail);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Doğrulama kodunu e-posta kutundan al.')),
+        if (emailVerificationRequired) {
+          setState(() => mode = AuthMode.verifyEmail);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Doğrulama kodunu e-posta kutundan al.')),
+          );
+          return;
+        }
+        final session = await widget.repository.login(
+          email: email.text.trim(),
+          password: password.text,
         );
+        if (mounted) widget.onAuthenticated(session);
         return;
       }
       if (mode == AuthMode.verifyEmail) {
