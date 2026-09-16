@@ -269,12 +269,12 @@ app.get('/users/:id/poems', authenticate, async (req, res, next) => {
 function poemAccessClause(currentUserId) {
   return `WHERE p.visibility = 'public'
     OR p.author_id = ${currentUserId}
-    OR EXISTS (
+    OR (p.visibility != 'private' AND EXISTS (
       SELECT 1 FROM poem_recipients pr WHERE pr.poem_id = p.id AND pr.user_id = ${currentUserId}
-    )
-    OR EXISTS (
+    ))
+    OR (p.visibility != 'private' AND EXISTS (
       SELECT 1 FROM follows f WHERE f.follower_id = ${currentUserId} AND f.following_id = p.author_id
-    )`;
+    ))`;
 }
 
 app.get('/poems', authenticate, async (req, res, next) => {
@@ -287,7 +287,7 @@ app.get('/poems', authenticate, async (req, res, next) => {
 app.get('/feed', authenticate, async (req, res, next) => {
   try {
     const result = await query(
-      poemSelect(`WHERE EXISTS (
+      poemSelect(`WHERE p.visibility != 'private' AND EXISTS (
         SELECT 1 FROM follows f WHERE f.follower_id = $1 AND f.following_id = p.author_id
       )`),
       [req.userId],
@@ -307,7 +307,7 @@ app.post('/poems', authenticate, async (req, res, next) => {
   const client = await pool.connect();
   try {
     const { title, body, visibility = 'public', recipientIds = [] } = req.body;
-    if (!title?.trim() || !body?.trim() || !['public', 'selected'].includes(visibility)) {
+    if (!title?.trim() || !body?.trim() || !['public', 'selected', 'private'].includes(visibility)) {
       return res.status(400).json({ message: 'Şiir bilgileri geçersiz.' });
     }
     await client.query('BEGIN');

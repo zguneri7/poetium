@@ -686,11 +686,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 visibility: visibility,
                 recipientIds: recipientIds,
               );
-              if (!mounted) return;
+              if (!mounted) return poem;
               setState(() {
                 poems.insert(0, poem);
                 tab = 2;
               });
+              return poem;
             },
       ),
       ProfileScreen(
@@ -2038,30 +2039,28 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
     _load();
   }
 
-  String _exportText(Archive archive) => [
-        archive.archiveTitle.isEmpty ? archive.poemTitle : archive.archiveTitle,
+  String _exportText(Poem poem, {Archive? archive}) => [
+        archive?.archiveTitle.isNotEmpty == true ? archive!.archiveTitle : poem.title,
         '',
-        'Şair: @${archive.authorUsername}',
-        'Kaynak: ${archive.source == 'ocr' ? 'OCR' : 'Kaydedilen şiir'}',
-        if (archive.category.isNotEmpty) 'Kategori: ${archive.category}',
+        'Şair: ${poem.author}',
+        if (archive != null) 'Kaynak: ${archive.source == 'ocr' ? 'OCR' : 'Kaydedilen şiir'}',
+        if (archive?.category.isNotEmpty == true) 'Kategori: ${archive!.category}',
         '',
-        archive.poemBody,
-        if (archive.tags.isNotEmpty) ...['', 'Etiketler: ${archive.tags}'],
-        if (archive.notes.isNotEmpty) ...['', 'Notlar:', archive.notes],
+        poem.body,
+        if (archive?.tags.isNotEmpty == true) ...['', 'Etiketler: ${archive!.tags}'],
+        if (archive?.notes.isNotEmpty == true) ...['', 'Notlar:', archive!.notes],
       ].join('\n');
 
-  Future<void> _exportTextFile(Archive archive) async {
+  Future<void> _exportTextFile(Poem poem, {Archive? archive}) async {
     await SharePlus.instance.share(
       ShareParams(
-        text: _exportText(archive),
-        subject: archive.archiveTitle.isEmpty
-            ? archive.poemTitle
-            : archive.archiveTitle,
+        text: _exportText(poem, archive: archive),
+        subject: archive?.archiveTitle.isNotEmpty == true ? archive!.archiveTitle : poem.title,
       ),
     );
   }
 
-  Future<void> _exportPdf(Archive archive) async {
+  Future<void> _exportPdf(Poem poem, {Archive? archive}) async {
     final document = pw.Document();
     document.addPage(
       pw.MultiPage(
@@ -2070,34 +2069,32 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
           pw.Header(
             level: 0,
             child: pw.Text(
-              archive.archiveTitle.isEmpty
-                  ? archive.poemTitle
-                  : archive.archiveTitle,
+              archive?.archiveTitle.isNotEmpty == true ? archive!.archiveTitle : poem.title,
             ),
           ),
-          pw.Text('@${archive.authorUsername}'),
-          if (archive.category.isNotEmpty) pw.Text('Kategori: ${archive.category}'),
+          pw.Text(poem.author),
+          if (archive?.category.isNotEmpty == true) pw.Text('Kategori: ${archive!.category}'),
           pw.SizedBox(height: 20),
-          pw.Text(archive.poemBody),
-          if (archive.tags.isNotEmpty) ...[
+          pw.Text(poem.body),
+          if (archive?.tags.isNotEmpty == true) ...[
             pw.SizedBox(height: 20),
-            pw.Text('Etiketler: ${archive.tags}'),
+            pw.Text('Etiketler: ${archive!.tags}'),
           ],
-          if (archive.notes.isNotEmpty) ...[
+          if (archive?.notes.isNotEmpty == true) ...[
             pw.SizedBox(height: 12),
             pw.Text('Notlar:'),
-            pw.Text(archive.notes),
+            pw.Text(archive!.notes),
           ],
         ],
       ),
     );
     await Printing.sharePdf(
       bytes: await document.save(),
-      filename: '${archive.poemTitle.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}.pdf',
+      filename: '${poem.title.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_')}.pdf',
     );
   }
 
-  Future<void> _showExportMenu(Archive archive) async {
+  Future<void> _showExportMenu(Poem poem, {Archive? archive}) async {
     await showModalBottomSheet<void>(
       context: context,
       builder: (_) => SafeArea(
@@ -2108,7 +2105,7 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
               title: const Text('PDF olarak paylaş'),
               onTap: () {
                 Navigator.pop(context);
-                _exportPdf(archive);
+                _exportPdf(poem, archive: archive);
               },
             ),
             ListTile(
@@ -2116,7 +2113,7 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
               title: const Text('Metin olarak paylaş'),
               onTap: () {
                 Navigator.pop(context);
-                _exportTextFile(archive);
+                _exportTextFile(poem, archive: archive);
               },
             ),
           ],
@@ -2216,22 +2213,20 @@ class _ArchiveScreenState extends State<ArchiveScreen> {
                   isThreeLine: true,
                   trailing: PopupMenuButton<String>(
                     onSelected: (value) {
-                      if (archive == null) {
+                      if (value == 'archive') {
                         _archiveOwnPoem(poem);
                       } else if (value == 'edit') {
-                        _edit(archive);
+                        _edit(archive!);
                       } else if (value == 'delete') {
-                        _delete(archive);
+                        _delete(archive!);
                       } else {
-                        _showExportMenu(archive);
+                        _showExportMenu(poem, archive: archive);
                       }
                     },
                     itemBuilder: (_) => archive == null
                         ? const [
-                            PopupMenuItem(
-                              value: 'archive',
-                              child: Text('Arşive ekle'),
-                            ),
+                            PopupMenuItem(value: 'archive', child: Text('Arşive ekle')),
+                            PopupMenuItem(value: 'export', child: Text('Çıktı al')),
                           ]
                         : const [
                             PopupMenuItem(value: 'edit', child: Text('Düzenle')),
@@ -2604,7 +2599,7 @@ class _ProfileStat extends StatelessWidget {
 }
 
 typedef PublishPoem =
-    Future<void> Function({
+    Future<Poem> Function({
       required String title,
       required String body,
       required String visibility,
@@ -2876,7 +2871,7 @@ class _ComposeState extends State<Compose> {
     super.dispose();
   }
 
-  Future<void> submit() async {
+  Future<void> submit({bool archiveOnly = false}) async {
     if (title.text.trim().isEmpty || body.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Başlık ve şiir metni gerekli.')),
@@ -2885,12 +2880,26 @@ class _ComposeState extends State<Compose> {
     }
     setState(() => publishing = true);
     try {
-      await widget.onPublish(
+      final poem = await widget.onPublish(
         title: title.text.trim(),
         body: body.text.trim(),
-        visibility: visibility == 'Seçtiklerim' ? 'selected' : 'public',
-        recipientIds: recipients.toList(),
+        visibility: archiveOnly
+            ? 'private'
+            : (visibility == 'Seçtiklerim' ? 'selected' : 'public'),
+        recipientIds: archiveOnly ? const [] : recipients.toList(),
       );
+      await widget.repository.archivePoem(widget.token, poem.id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              archiveOnly
+                  ? 'Şiir sadece arşivine kaydedildi.'
+                  : 'Şiir yayınlandı ve arşivine kaydedildi.',
+            ),
+          ),
+        );
+      }
       title.clear();
       body.clear();
     } on ApiException catch (error) {
@@ -3032,6 +3041,20 @@ class _ComposeState extends State<Compose> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Text('Yayınla'),
+          ),
+        ),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton(
+            onPressed: publishing ? null : () => submit(archiveOnly: true),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(6),
+              ),
+            ),
+            child: const Text('Sadece arşive al'),
           ),
         ),
       ],

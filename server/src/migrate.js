@@ -32,6 +32,11 @@ const statements = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT poems_visibility CHECK (visibility IN ('public', 'selected'))
   )`,
+  `DO $$
+   BEGIN
+     ALTER TABLE poems DROP CONSTRAINT IF EXISTS poems_visibility;
+     ALTER TABLE poems ADD CONSTRAINT poems_visibility CHECK (visibility IN ('public', 'selected', 'private'));
+   END $$`,
   `CREATE TABLE IF NOT EXISTS poem_recipients (
     poem_id BIGINT NOT NULL REFERENCES poems(id) ON DELETE CASCADE,
     user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
