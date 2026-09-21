@@ -286,6 +286,11 @@ abstract class PoetiumRepository {
     required String tags,
   });
   Future<void> deleteArchive(String token, String archiveId);
+  Future<String> recognizeGemini({
+    required String token,
+    required String mimeType,
+    required String imageBase64,
+  });
 }
 
 class HttpPoetiumRepository implements PoetiumRepository {
@@ -300,6 +305,21 @@ class HttpPoetiumRepository implements PoetiumRepository {
 
   final String baseUrl;
   final http.Client client;
+
+  @override
+  Future<String> recognizeGemini({
+    required String token,
+    required String mimeType,
+    required String imageBase64,
+  }) async {
+    final data = await request(
+      'POST',
+      '/ocr/gemini',
+      token: token,
+      body: {'mimeType': mimeType, 'imageBase64': imageBase64},
+    );
+    return data['text'] as String;
+  }
 
   Future<Map<String, dynamic>> request(
     String method,

@@ -11,6 +11,12 @@ import { migrate } from './migrate.js';
 if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET is required.');
 
 const emailVerificationRequired = process.env.EMAIL_VERIFICATION_REQUIRED === 'true';
+const geminiApiKey = process.env.GEMINI_API_KEY;
+const geminiRpmLimit = Number(process.env.GEMINI_RPM_LIMIT ?? 5);
+const geminiRpdLimit = Number(process.env.GEMINI_RPD_LIMIT ?? 20);
+const geminiRequests = [];
+let geminiDay = new Date().toISOString().slice(0, 10);
+let geminiDayCount = 0;
 
 const app = express();
 app.use(cors());
@@ -36,6 +42,25 @@ async function sendVerificationEmail(email, token) {
     subject: 'Poetium e-posta doğrulaması',
     text: `Poetium hesabını doğrulamak için bu kodu uygulamaya gir:\n\n${token}\n\nBağlantı: ${verifyUrl}\n\nBu kod 30 dakika geçerlidir.`,
   });
+}
+
+function reserveGeminiRequest() {
+  const now = Date.now();
+  const today = new Date(now).toISOString().slice(0, 10);
+  if (today !== geminiDay) {
+    geminiDay = today;
+    geminiDayCount = 0;
+  }
+  while (geminiRequests[0] <= now - 60_000) geminiRequests.shift();
+  if (geminiDayCount >= geminiRpdLimit) {
+    return 'Günlük Gemini OCR kotası doldu. Yarın tekrar deneyin.';
+  }
+  if (geminiRequests.length >= geminiRpmLimit) {
+    return 'Gemini OCR dakikalık kotası doldu. Bir dakika sonra tekrar deneyin.';
+  }
+  geminiRequests.push(now);
+  geminiDayCount += 1;
+  return null;
 }
 
 function publicUser(row) {
@@ -100,6 +125,50 @@ app.get('/health', async (_req, res, next) => {
   try {
     const result = await query('SELECT current_database() AS database, NOW() AS time');
     res.json({ status: 'ok', ...result.rows[0] });
+  } catch (error) { next(error); }
+});
+
+app.post('/ocr/gemini', authenticate, async (req, res, next) => {
+  try {
+    if (!geminiApiKey) {
+      return res.status(503).json({ message: 'Gemini OCR yapılandırılmamış.' });
+    }
+    const { mimeType, imageBase64 } = req.body;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType) || typeof imageBase64 !== 'string') {
+      return res.status(400).json({ message: 'Geçerli bir görsel gerekli.' });
+    }
+    const quotaMessage = reserveGeminiRequest();
+    if (quotaMessage) return res.status(429).json({ message: quotaMessage });
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiApiKey)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: 'Bu görseldeki şiir metnini aynen yazıya aktar. Yorum yapma, metni açıklama, sadece satır sonlarını koruyarak OCR sonucunu döndür. Okuyamadığın kelimeleri tahmin etme.' },
+              { inline_data: { mime_type: mimeType, data: imageBase64 } },
+            ],
+          }],
+          generationConfig: { temperature: 0 },
+        }),
+      },
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      if (response.status === 429) {
+        return res.status(429).json({ message: 'Gemini OCR kotası doldu. Daha sonra tekrar deneyin.' });
+      }
+      return res.status(502).json({ message: 'Gemini OCR isteği başarısız oldu.' });
+    }
+    const text = data.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text ?? '')
+      .join('')
+      .trim();
+    if (!text) return res.status(422).json({ message: 'Görselden metin okunamadı.' });
+    res.json({ text });
   } catch (error) { next(error); }
 });
 

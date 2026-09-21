@@ -2675,6 +2675,30 @@ class _OcrCaptureScreenState extends State<OcrCaptureScreen> {
     }
   }
 
+  Future<void> recognizeWithGemini() async {
+    final selected = image;
+    if (selected == null || recognizing) return;
+    setState(() => recognizing = true);
+    try {
+      final bytes = await selected.readAsBytes();
+      final mimeType = switch (selected.path.toLowerCase().split('.').last) {
+        'png' => 'image/png',
+        'webp' => 'image/webp',
+        _ => 'image/jpeg',
+      };
+      final recognized = await widget.repository.recognizeGemini(
+        token: widget.token,
+        mimeType: mimeType,
+        imageBase64: base64Encode(bytes),
+      );
+      if (mounted) text.text = recognized;
+    } on ApiException catch (error) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(error.message)));
+    } finally {
+      if (mounted) setState(() => recognizing = false);
+    }
+  }
+
   Future<void> save({required bool archive}) async {
     if (saving || text.text.trim().isEmpty || title.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2749,10 +2773,32 @@ class _OcrCaptureScreenState extends State<OcrCaptureScreen> {
           ),
           const SizedBox(height: 16),
           if (image != null)
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.file(File(image!.path), height: 190, fit: BoxFit.cover),
+            Container(
+              height: 300,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFE8E0D3)),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: InteractiveViewer(
+                minScale: 1,
+                maxScale: 4,
+                child: Image.file(
+                  File(image!.path),
+                  width: double.infinity,
+                  fit: BoxFit.contain,
+                ),
+              ),
             ),
+          if (image != null) ...[
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: recognizing ? null : recognizeWithGemini,
+              icon: const Icon(Icons.auto_awesome_outlined),
+              label: const Text('Gemini ile oku'),
+            ),
+          ],
           if (recognizing) ...[
             const SizedBox(height: 18),
             const LinearProgressIndicator(),
@@ -2767,9 +2813,10 @@ class _OcrCaptureScreenState extends State<OcrCaptureScreen> {
           const SizedBox(height: 12),
           TextField(
             controller: text,
-            minLines: 10,
-            maxLines: 18,
+            minLines: 12,
+            maxLines: 24,
             textAlignVertical: TextAlignVertical.top,
+            keyboardType: TextInputType.multiline,
             decoration: const InputDecoration(labelText: 'Tanınan metni düzenle', border: OutlineInputBorder()),
           ),
           const SizedBox(height: 16),
